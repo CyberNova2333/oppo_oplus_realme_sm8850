@@ -720,8 +720,18 @@ jobs:
           mkdir -p arb_kpm_build
           git clone --depth=1 https://github.com/KernelSU-Next/KPatch-Next arb_kpm_build/kpn_src
 
-          KPN="$WORKDIR/arb_kpm_build/kpn_src/kernel"
-          INCLUDE_FLAGS="-I$KPN/patch/include -I$KPN/linux/include -I$KPN/linux/arch/arm64/include -I$KPN/linux/tools/arch/arm64/include"
+          # Locate headers dynamically — repo layout may vary across KPatch-Next versions
+          KPN_ROOT="$WORKDIR/arb_kpm_build/kpn_src"
+          PATCH_INC=$(find "$KPN_ROOT" -name "compiler.h" -exec dirname {} \; 2>/dev/null | head -1)
+          LINUX_INC=$(find "$KPN_ROOT" -path "*/linux/include" -type d 2>/dev/null | head -1)
+          ARM64_INC=$(find "$KPN_ROOT" -path "*/arch/arm64/include" -type d 2>/dev/null | grep -v tools | head -1)
+          ARM64_TOOLS_INC=$(find "$KPN_ROOT" -path "*/tools/arch/arm64/include" -type d 2>/dev/null | head -1)
+          echo "Header locations: PATCH=$PATCH_INC LINUX=$LINUX_INC ARM64=$ARM64_INC TOOLS=$ARM64_TOOLS_INC"
+          [ -z "$PATCH_INC" ] && { echo "ERROR: compiler.h not found in cloned repo"; exit 1; }
+          INCLUDE_FLAGS="-I$PATCH_INC"
+          [ -n "$LINUX_INC" ] && INCLUDE_FLAGS="$INCLUDE_FLAGS -I$LINUX_INC"
+          [ -n "$ARM64_INC" ] && INCLUDE_FLAGS="$INCLUDE_FLAGS -I$ARM64_INC"
+          [ -n "$ARM64_TOOLS_INC" ] && INCLUDE_FLAGS="$INCLUDE_FLAGS -I$ARM64_TOOLS_INC"
 
           # 写入arb_guard KPM源码 (KPatch-Next hook_wrap API)
           cat > arb_kpm_build/arb_guard.c << 'ARBC'
@@ -776,10 +786,10 @@ jobs:
 
           "$CLANG" --target=aarch64-linux-android31 \
             $CFLAGS $INCLUDE_FLAGS \
-            -Tarb_kpm_build/arb_guard.lds \
             -c -O2 -o arb_kpm_build/arb_guard.o \
             arb_kpm_build/arb_guard.c \
-          && "$CLANG" -r -o arb_kpm_build/arb_guard.kpm arb_kpm_build/arb_guard.o \
+          && "$CLANG" -r -Tarb_kpm_build/arb_guard.lds \
+            -o arb_kpm_build/arb_guard.kpm arb_kpm_build/arb_guard.o \
           && echo "ARB Guard KPM built successfully" \
           || { echo "ERROR: ARB Guard KPM build failed"; exit 1; }
 
