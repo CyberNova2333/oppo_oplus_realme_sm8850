@@ -720,15 +720,20 @@ jobs:
           mkdir -p arb_kpm_build
           git clone --depth=1 https://github.com/KernelSU-Next/KPatch-Next arb_kpm_build/kpn_src
 
-          # Locate headers dynamically — repo layout may vary across KPatch-Next versions
+          # Locate headers dynamically — compiler.h and kpmodule.h/ksyms.h/hook.h
+          # live in different directories (e.g. kernel/include vs kernel/patch/include)
           KPN_ROOT="$WORKDIR/arb_kpm_build/kpn_src"
-          PATCH_INC=$(find "$KPN_ROOT" -name "compiler.h" -exec dirname {} \; 2>/dev/null | head -1)
+          COMPILER_INC=$(find "$KPN_ROOT" -name "compiler.h" -exec dirname {} \; 2>/dev/null | head -1)
+          KPM_INC=$(find "$KPN_ROOT" -name "kpmodule.h" -exec dirname {} \; 2>/dev/null | head -1)
           LINUX_INC=$(find "$KPN_ROOT" -path "*/linux/include" -type d 2>/dev/null | head -1)
           ARM64_INC=$(find "$KPN_ROOT" -path "*/arch/arm64/include" -type d 2>/dev/null | grep -v tools | head -1)
           ARM64_TOOLS_INC=$(find "$KPN_ROOT" -path "*/tools/arch/arm64/include" -type d 2>/dev/null | head -1)
-          echo "Header locations: PATCH=$PATCH_INC LINUX=$LINUX_INC ARM64=$ARM64_INC TOOLS=$ARM64_TOOLS_INC"
-          [ -z "$PATCH_INC" ] && { echo "ERROR: compiler.h not found in cloned repo"; exit 1; }
-          INCLUDE_FLAGS="-I$PATCH_INC"
+          echo "compiler.h : $COMPILER_INC"
+          echo "kpmodule.h : $KPM_INC"
+          echo "linux/include : $LINUX_INC"
+          [ -z "$COMPILER_INC" ] && { echo "ERROR: compiler.h not found"; exit 1; }
+          [ -z "$KPM_INC" ] && { echo "ERROR: kpmodule.h not found"; exit 1; }
+          INCLUDE_FLAGS="-I$COMPILER_INC -I$KPM_INC"
           [ -n "$LINUX_INC" ] && INCLUDE_FLAGS="$INCLUDE_FLAGS -I$LINUX_INC"
           [ -n "$ARM64_INC" ] && INCLUDE_FLAGS="$INCLUDE_FLAGS -I$ARM64_INC"
           [ -n "$ARM64_TOOLS_INC" ] && INCLUDE_FLAGS="$INCLUDE_FLAGS -I$ARM64_TOOLS_INC"
