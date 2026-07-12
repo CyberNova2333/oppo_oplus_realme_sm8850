@@ -720,57 +720,42 @@ jobs:
           mkdir -p arb_kpm_build
           git clone --depth=1 https://github.com/KernelSU-Next/KPatch-Next arb_kpm_build/kpn_src
 
-          # Locate headers dynamically — compiler.h and kpmodule.h/ksyms.h/hook.h
-          # live in different directories (e.g. kernel/include vs kernel/patch/include)
-          KPN_ROOT="$WORKDIR/arb_kpm_build/kpn_src"
-          COMPILER_INC=$(find "$KPN_ROOT" -name "compiler.h" -exec dirname {} \; 2>/dev/null | head -1)
-          KPM_INC=$(find "$KPN_ROOT" -name "kpmodule.h" -exec dirname {} \; 2>/dev/null | head -1)
-          LINUX_INC=$(find "$KPN_ROOT" -path "*/linux/include" -type d 2>/dev/null | head -1)
-          ARM64_INC=$(find "$KPN_ROOT" -path "*/arch/arm64/include" -type d 2>/dev/null | grep -v tools | head -1)
-          ARM64_TOOLS_INC=$(find "$KPN_ROOT" -path "*/tools/arch/arm64/include" -type d 2>/dev/null | head -1)
-          echo "compiler.h : $COMPILER_INC"
-          echo "kpmodule.h : $KPM_INC"
-          echo "linux/include : $LINUX_INC"
-          [ -z "$COMPILER_INC" ] && { echo "ERROR: compiler.h not found"; exit 1; }
-          [ -z "$KPM_INC" ] && { echo "ERROR: kpmodule.h not found"; exit 1; }
-          INCLUDE_FLAGS="-I$COMPILER_INC -I$KPM_INC"
-          [ -n "$LINUX_INC" ] && INCLUDE_FLAGS="$INCLUDE_FLAGS -I$LINUX_INC"
-          [ -n "$ARM64_INC" ] && INCLUDE_FLAGS="$INCLUDE_FLAGS -I$ARM64_INC"
-          [ -n "$ARM64_TOOLS_INC" ] && INCLUDE_FLAGS="$INCLUDE_FLAGS -I$ARM64_TOOLS_INC"
+          # All KPM headers live flat in kernel/include/ in current KPatch-Next
+          KPN_INC="$WORKDIR/arb_kpm_build/kpn_src/kernel/include"
+          [ -f "$KPN_INC/compiler.h" ] || { echo "ERROR: KPatch-Next headers not at expected path"; exit 1; }
+          INCLUDE_FLAGS="-I$KPN_INC"
 
-          # 写入arb_guard KPM源码 (KPatch-Next hook_wrap API)
+          # 写入arb_guard KPM源码
           cat > arb_kpm_build/arb_guard.c << 'ARBC'
           /* SPDX-License-Identifier: GPL-2.0-or-later */
           #include <compiler.h>
           #include <kpmodule.h>
-          #include <ksyms.h>
-          #include <linux/printk.h>
+          #include <kallsyms.h>
           #include <hook.h>
+          #include <log.h>
           KPM_NAME("arb-guard");
           KPM_VERSION("1.0.0");
           KPM_LICENSE("GPL v2");
           KPM_AUTHOR("gbl_root_canoe");
           KPM_DESCRIPTION("Suppress qcom_scm_update_rollback_version to prevent ARB eFuse burn");
-          kfunc_def(qcom_scm_update_rollback_version);
+          static void (*arb_target_fn)(void) = NULL;
           static void before_arb_update(hook_fargs0_t *args, void *udata) {
               args->skip_origin = 1;
               args->ret = 0;
-              pr_warn_once("arb_guard: qcom_scm_update_rollback_version suppressed\n");
+              logkw("arb_guard: qcom_scm_update_rollback_version suppressed\n");
           }
-          static long arb_guard_init(const char *args, const char *event, void *__user reserved) {
-              kfunc_lookup_name(qcom_scm_update_rollback_version);
-              void *fn = (void *)kfunc(qcom_scm_update_rollback_version);
-              if (!fn) { pr_err("arb_guard: symbol not found\n"); return -1; }
-              hook_err_t err = hook_wrap(fn, 0, before_arb_update, 0, 0);
-              if (err) { pr_err("arb_guard: hook_wrap failed: %d\n", err); return -1; }
-              pr_info("arb_guard: hook installed @ %p\n", fn);
+          static long arb_guard_init(const char *args, const char *event, void *reserved) {
+              arb_target_fn = (void (*)(void))kallsyms_lookup_name("qcom_scm_update_rollback_version");
+              if (!arb_target_fn) { logke("arb_guard: symbol not found\n"); return -1; }
+              hook_err_t err = hook_wrap(arb_target_fn, 0, before_arb_update, 0, 0);
+              if (err) { logke("arb_guard: hook_wrap failed: %d\n", (int)err); return -1; }
+              logki("arb_guard: hook installed\n");
               return 0;
           }
           static long arb_guard_control0(const char *args, char *__user out_msg, int outlen) { return 0; }
-          static long arb_guard_exit(void *__user reserved) {
-              void *fn = (void *)kfunc(qcom_scm_update_rollback_version);
-              if (fn) unhook(fn);
-              pr_info("arb_guard: hook removed\n");
+          static long arb_guard_exit(void *reserved) {
+              if (arb_target_fn) unhook(arb_target_fn);
+              logki("arb_guard: hook removed\n");
               return 0;
           }
           KPM_INIT(arb_guard_init);
