@@ -778,7 +778,7 @@ jobs:
             $CFLAGS $INCLUDE_FLAGS \
             -c -O2 -o arb_kpm_build/arb_guard.o \
             arb_kpm_build/arb_guard.c \
-          && "$CLANG" -r -Tarb_kpm_build/arb_guard.lds \
+          && "$CLANG" --target=aarch64-linux-android31 -r -Tarb_kpm_build/arb_guard.lds \
             -o arb_kpm_build/arb_guard.kpm arb_kpm_build/arb_guard.o \
           && echo "ARB Guard KPM built successfully" \
           || { echo "ERROR: ARB Guard KPM build failed"; exit 1; }
