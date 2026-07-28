@@ -9,8 +9,11 @@ cd "$SCRIPT_DIR"
 echo "===== 欧加真SM8850通用6.12.23 A16 OKI内核本地编译脚本 By Coolapk@cctv18 ====="
 echo ">>> 读取用户配置..."
 MANIFEST=${MANIFEST:-oppo+oplus+realme}
-read -p "请输入自定义内核后缀（默认：android16-5-ga8f88ad96df3-ab13929693-4k）: " CUSTOM_SUFFIX
-CUSTOM_SUFFIX=${CUSTOM_SUFFIX:-android16-5-ga8f88ad96df3-ab13929693-4k}
+STOCK_KERNEL_SUFFIX="android16-5-gb2a876903b49-ab14541642-4k"
+STOCK_KERNEL_TIMESTAMP="Fri Dec  5 02:05:55 UTC 2025"
+STOCK_KERNEL_COMPILER="Android (14043575, +pgo, +bolt, +lto, +mlgo, based on r536225) clang version 19.0.1 (https://android.googlesource.com/toolchain/llvm-project b3a530ec6537146650e42be89f1089e9a3588460), LLD 19.0.1"
+read -p "请输入自定义内核后缀（默认：${STOCK_KERNEL_SUFFIX}）: " CUSTOM_SUFFIX
+CUSTOM_SUFFIX=${CUSTOM_SUFFIX:-$STOCK_KERNEL_SUFFIX}
 read -p "是否启用susfs？(y/n，默认：y): " APPLY_SUSFS
 APPLY_SUSFS=${APPLY_SUSFS:-y}
 read -p "是否启用 KPM？(y-启用 KpatchNext独立kpm实现, n-关闭kpm，默认：n): " USE_PATCH_LINUX
@@ -117,19 +120,12 @@ wait
 echo "所有源码及llvm-clang19工具链初始化完成！"
 echo ">>> 初始化仓库完成!"
 
-for f in common/scripts/setlocalversion; do
-  sed -i 's/ -dirty//g' "$f"
-  sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
-done
-
 # ===== 替换版本后缀 =====
 echo ">>> 替换内核版本后缀..."
-for f in ./common/scripts/setlocalversion; do
-  sed -i "\$s|echo \"\\\$res\"|echo \"-${CUSTOM_SUFFIX}\"|" "$f"
-done
-sudo sed -i 's/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-'${CUSTOM_SUFFIX}'"/' ./common/arch/arm64/configs/gki_defconfig
-sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
-echo "CONFIG_LOCALVERSION_AUTO=n" >> ./common/arch/arm64/configs/gki_defconfig
+./common/scripts/config --file ./common/arch/arm64/configs/gki_defconfig \
+  --set-str LOCALVERSION "-${CUSTOM_SUFFIX}"
+./common/scripts/config --file ./common/arch/arm64/configs/gki_defconfig \
+  --disable LOCALVERSION_AUTO
 
 # ===== 拉取 KSU 并设置版本号 =====
 if [[ $KSU_BRANCH == [yYrR] ]]; then
@@ -432,6 +428,11 @@ KCFLAGS+=" -fmacro-prefix-map=$ROOT_REAL_PATH=."
 KCFLAGS+=" -ffile-prefix-map=$ROOT_REAL_PATH=."
 export KCFLAGS
 source "./_setup_env.sh" 2>/dev/null || true
+export LOCALVERSION=""
+export KBUILD_BUILD_USER="kleaf"
+export KBUILD_BUILD_HOST="build-host"
+export KBUILD_BUILD_VERSION="1"
+export KBUILD_BUILD_TIMESTAMP="$STOCK_KERNEL_TIMESTAMP"
 echo "KCFLAGS=$KCFLAGS"
 
 make -j$(nproc --all) \
@@ -446,6 +447,24 @@ make -j$(nproc --all) \
     OBJCOPY="llvm-objcopy" \
     O=out \
     gki_defconfig Image 2>&1 | tee $WORKDIR/build.log
+
+EXPECTED_KERNEL_RELEASE="6.12.23-${CUSTOM_SUFFIX}"
+ACTUAL_KERNEL_RELEASE="$(cat out/include/config/kernel.release)"
+EXPECTED_KERNEL_BANNER="Linux version ${EXPECTED_KERNEL_RELEASE} (kleaf@build-host) (${STOCK_KERNEL_COMPILER}) #1 SMP PREEMPT ${STOCK_KERNEL_TIMESTAMP}"
+ACTUAL_KERNEL_BANNER="$(strings out/arch/arm64/boot/Image | grep -m1 '^Linux version ')"
+if [[ "$ACTUAL_KERNEL_RELEASE" != "$EXPECTED_KERNEL_RELEASE" ]]; then
+  echo "错误：内核 release 与目标不符"
+  echo "期望：$EXPECTED_KERNEL_RELEASE"
+  echo "实际：$ACTUAL_KERNEL_RELEASE"
+  exit 1
+fi
+if [[ "$ACTUAL_KERNEL_BANNER" != "$EXPECTED_KERNEL_BANNER" ]]; then
+  echo "错误：完整内核版本字符串与目标不符"
+  echo "期望：$EXPECTED_KERNEL_BANNER"
+  echo "实际：$ACTUAL_KERNEL_BANNER"
+  exit 1
+fi
+echo "完整内核版本字符串校验通过：$ACTUAL_KERNEL_BANNER"
 echo ">>> 内核编译成功！"
 
 # ===== 选择使用 patch_linux (KPM补丁)=====

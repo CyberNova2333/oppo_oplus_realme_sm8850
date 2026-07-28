@@ -5,7 +5,12 @@ env:
   ANDROID_VERSION: 'android16'
   KERNEL_VERSION: '6.12'
   SUB_VERSION: '58'
-  KERNEL_NAME: 'android16-5-g8c67d4274c0a-ab14275539-4k'
+  KERNEL_NAME: 'android16-6-g7704a1ae279b-ab15213644-4k'
+  KERNEL_BUILD_TIMESTAMP: 'Wed Apr 15 18:09:38 UTC 2026'
+  KERNEL_BUILD_USER: 'kleaf'
+  KERNEL_BUILD_HOST: 'build-host'
+  KERNEL_BUILD_VERSION: '1'
+  KERNEL_COMPILER: 'Android (14043575, +pgo, +bolt, +lto, +mlgo, based on r536225) clang version 19.0.1 (https://android.googlesource.com/toolchain/llvm-project b3a530ec6537146650e42be89f1089e9a3588460), LLD 19.0.1'
   CCACHE_KEY: ccache-ecsv4-6.12.58
 
 on:
@@ -154,11 +159,6 @@ jobs:
           
           wait
           echo "所有源码及llvm-clang19工具链初始化完成！"
-          echo "正在去除 dirty 后缀..."
-          for f in common/scripts/setlocalversion; do
-            sed -i 's/ -dirty//g' "$f"
-            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
-          done
 
       - name: 配置ccache目录
         run: |
@@ -545,20 +545,16 @@ jobs:
           cd kernel_workspace
           echo "替换内核版本后缀..."
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            echo "当前内核版本后缀：${{ github.event.inputs.kernel_suffix }}"
-            for f in ./common/scripts/setlocalversion; do
-              sed -i "\$s|echo \"\\\$res\"|echo \"-${{ github.event.inputs.kernel_suffix }}\"|" "$f"
-            done
-            sudo sed -i 's/-4k/-${{ github.event.inputs.KERNEL_SUFFIX }}/g' ./common/arch/arm64/configs/gki_defconfig
+            RESOLVED_KERNEL_SUFFIX="${{ github.event.inputs.kernel_suffix }}"
           else
-            echo "当前内核版本后缀：${{ env.KERNEL_NAME }}"
-            for f in ./common/scripts/setlocalversion; do
-              sed -i "\$s|echo \"\\\$res\"|echo \"-${{ env.KERNEL_NAME }}\"|" "$f"
-            done
-            sudo sed -i 's/-4k/-${{ env.KERNEL_NAME }}/g' ./common/arch/arm64/configs/gki_defconfig
+            RESOLVED_KERNEL_SUFFIX="${{ env.KERNEL_NAME }}"
           fi
-          sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
-          echo "CONFIG_LOCALVERSION_AUTO=n" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "当前内核版本后缀：$RESOLVED_KERNEL_SUFFIX"
+          ./common/scripts/config --file ./common/arch/arm64/configs/gki_defconfig \
+            --set-str LOCALVERSION "-${RESOLVED_KERNEL_SUFFIX}"
+          ./common/scripts/config --file ./common/arch/arm64/configs/gki_defconfig \
+            --disable LOCALVERSION_AUTO
+          echo "RESOLVED_KERNEL_SUFFIX=$RESOLVED_KERNEL_SUFFIX" >> "$GITHUB_ENV"
            
       - name: 构建内核
         run: |
@@ -663,6 +659,11 @@ jobs:
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump OBJSIZE=llvm-size STRIP=llvm-strip
           # 5. 编译前运行官方环境配置脚本
           source "./_setup_env.sh" 2>/dev/null || true
+          export LOCALVERSION=""
+          export KBUILD_BUILD_USER="${{ env.KERNEL_BUILD_USER }}"
+          export KBUILD_BUILD_HOST="${{ env.KERNEL_BUILD_HOST }}"
+          export KBUILD_BUILD_VERSION="${{ env.KERNEL_BUILD_VERSION }}"
+          export KBUILD_BUILD_TIMESTAMP="${{ env.KERNEL_BUILD_TIMESTAMP }}"
           
           #在构建内核的同时清除不必要的.NET, Android NDK, Haskell, CodeQL运行库，清理空间且不阻塞后续步骤运行
           sudo rm -rf /usr/share/dotnet &
@@ -672,6 +673,24 @@ jobs:
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="clang" LD="ld.lld" OBJCOPY="llvm-objcopy" O=out gki_defconfig &&
           export CC="$(pwd)/cc-wrapper" && export LD="$(pwd)/ld-wrapper" &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" OBJCOPY="llvm-objcopy" O=out Image
+
+          EXPECTED_KERNEL_RELEASE="${{ env.KERNEL_VERSION }}.${{ env.SUB_VERSION }}-${RESOLVED_KERNEL_SUFFIX}"
+          ACTUAL_KERNEL_RELEASE="$(cat out/include/config/kernel.release)"
+          EXPECTED_KERNEL_BANNER="Linux version ${EXPECTED_KERNEL_RELEASE} (${{ env.KERNEL_BUILD_USER }}@${{ env.KERNEL_BUILD_HOST }}) (${{ env.KERNEL_COMPILER }}) #${{ env.KERNEL_BUILD_VERSION }} SMP PREEMPT ${{ env.KERNEL_BUILD_TIMESTAMP }}"
+          ACTUAL_KERNEL_BANNER="$(strings out/arch/arm64/boot/Image | grep -m1 '^Linux version ')"
+          if [[ "$ACTUAL_KERNEL_RELEASE" != "$EXPECTED_KERNEL_RELEASE" ]]; then
+            echo "错误：内核 release 与目标不符"
+            echo "期望：$EXPECTED_KERNEL_RELEASE"
+            echo "实际：$ACTUAL_KERNEL_RELEASE"
+            exit 1
+          fi
+          if [[ "$ACTUAL_KERNEL_BANNER" != "$EXPECTED_KERNEL_BANNER" ]]; then
+            echo "错误：完整内核版本字符串与目标不符"
+            echo "期望：$EXPECTED_KERNEL_BANNER"
+            echo "实际：$ACTUAL_KERNEL_BANNER"
+            exit 1
+          fi
+          echo "完整内核版本字符串校验通过：$ACTUAL_KERNEL_BANNER"
           
           # 编译后时间劫持二次校验
           echo "--- 编译后环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
